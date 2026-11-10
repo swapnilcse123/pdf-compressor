@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Compressor</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f2f4f7;
+    color: #1a1a1a;
+  }
+  .container {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 30px 16px;
+  }
+  h1 { font-size: 32px; margin: 0 0 8px; }
+  .sub { color: #666; margin: 0 0 24px; }
+
+  .card {
+    background: #ffffff;
+    border: 1px solid #dcdfe4;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+
+  .drop {
+    display: block;
+    border: 2px dashed #9aa3b0;
+    border-radius: 8px;
+    padding: 40px 16px;
+    text-align: center;
+    cursor: pointer;
+    background: #fafbfc;
+  }
+  .drop:hover, .drop.over { border-color: #2563eb; background: #eef4ff; }
+  .drop input { display: none; }
+  .drop strong { display: block; font-size: 18px; margin-bottom: 4px; }
+  .drop span { color: #666; font-size: 14px; }
+
+  #fileInfo { display: none; margin-top: 12px; font-size: 14px; }
+  #fileInfo.show { display: block; }
+
+  .label { font-weight: bold; margin-bottom: 10px; display: block; }
+  .option { display: block; padding: 10px 0; cursor: pointer; }
+  .option input { margin-right: 8px; }
+  .option small { color: #666; }
+
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: bold;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: #2563eb;
+    color: #ffffff;
+  }
+  button:disabled { background: #a8b3c7; cursor: not-allowed; }
+  #downloadBtn { background: #16a34a; margin-top: 14px; }
+
+  #progressBox { display: none; margin-top: 14px; }
+  #progressBox.show { display: block; }
+  .track { height: 10px; background: #e2e5ea; border-radius: 5px; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: #2563eb; }
+  #progressText { font-size: 14px; color: #555; margin: 8px 0 0; }
+
+  #error { display: none; color: #b91c1c; margin-top: 12px; }
+  #error.show { display: block; }
+
+  #result { display: none; }
+  #result.show { display: block; }
+  #result h2 { margin: 0 0 12px; color: #16a34a; }
+  .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+  #note { font-size: 14px; color: #666; margin: 12px 0 0; }
+  .footer { font-size: 13px; color: #777; text-align: center; margin-top: 20px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>PDF Compressor</h1>
+  <p class="sub">Compress your PDF in the browser. Your file is not uploaded anywhere.</p>
+
+  <div class="card">
+    <label class="drop" id="drop">
+      <input type="file" id="fileInput" accept="application/pdf,.pdf">
+      <strong>Choose a PDF file</strong>
+      <span>or drag and drop it here</span>
+    </label>
+    <div id="fileInfo"></div>
+  </div>
+
+  <div class="card">
+    <span class="label">Compression level</span>
+    <label class="option"><input type="radio" name="level" value="light"> Light <small>– better quality, smaller saving</small></label>
+    <label class="option"><input type="radio" name="level" value="balanced" checked> Balanced <small>– recommended</small></label>
+    <label class="option"><input type="radio" name="level" value="strong"> Strong <small>– smallest file, lower quality</small></label>
+
+    <button id="compressBtn" disabled>Compress PDF</button>
+    <div id="progressBox">
+      <div class="track"><div id="fill"></div></div>
+      <p id="progressText"></p>
+    </div>
+    <p id="error"></p>
+  </div>
+
+  <div class="card" id="result">
+    <h2 id="saved"></h2>
+    <div class="row"><span>Original size</span><strong id="sizeBefore"></strong></div>
+    <div class="row"><span>Compressed size</span><strong id="sizeAfter"></strong></div>
+    <button id="downloadBtn">Download again</button>
+    <p id="note"></p>
+  </div>
+
+  <p class="footer">Pages are saved as compressed images, so text in the new PDF cannot be selected.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script>
+(function () {
+  function $(id) { return document.getElementById(id); }
+
+  var LEVELS = {
+    light:    { scale: 2,   quality: 0.8 },
+    balanced: { scale: 1.4, quality: 0.6 },
+    strong:   { scale: 1,   quality: 0.45 }
+  };
+  var file = null, outBytes = null, outName = '';
+
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  function formatSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+    return (n / 1048576).toFixed(2) + ' MB';
+  }
+  function showError(msg) {
+    var e = $('error');
+    e.textContent = msg;
+    e.className = msg ? 'show' : '';
+  }
+
+  function setFile(f) {
+    showError('');
+    $('result').className = 'card';
+    if (!f) return;
+    if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) {
+      file = null;
+      $('compressBtn').disabled = true;
+      $('fileInfo').className = '';
+      showError('This is not a PDF file.');
+      return;
+    }
+    file = f;
+    $('fileInfo').textContent = f.name + ' (' + formatSize(f.size) + ')';
+    $('fileInfo').className = 'show';
+    $('compressBtn').disabled = false;
+  }
+
+  $('fileInput').addEventListener('change', function (e) { setFile(e.target.files[0]); });
+
+  var drop = $('drop');
+  ['dragenter', 'dragover'].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); });
+  });
+  ['dragleave', 'drop'].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove('over'); });
+  });
+  drop.addEventListener('drop', function (e) { setFile(e.dataTransfer.files[0]); });
+
+  function canvasToJpeg(canvas, quality) {
+    return new Promise(function (resolve) {
+      canvas.toBlob(function (blob) {
+        blob.arrayBuffer().then(resolve);
+      }, 'image/jpeg', quality);
+    });
+  }
+
+  async function compress() {
+    showError('');
+    $('result').className = 'card';
+    var level = LEVELS[document.querySelector('input[name=level]:checked').value];
+    $('compressBtn').disabled = true;
+    $('progressBox').className = 'show';
+    $('fill').style.width = '0';
+    $('progressText').textContent = 'Reading file...';
+
+    try {
+      var data = new Uint8Array(await file.arrayBuffer());
+      var src = await pdfjsLib.getDocument({ data: data.slice() }).promise;
+      var out = await PDFLib.PDFDocument.create();
+      var canvas = document.createElement('canvas');
+      var ctx = canvas.getContext('2d');
+
+      for (var i = 1; i <= src.numPages; i++) {
+        $('progressText').textContent = 'Compressing page ' + i + ' of ' + src.numPages;
+        var page = await src.getPage(i);
+        var pt = page.getViewport({ scale: 1 });
+        var vp = page.getViewport({ scale: level.scale });
+
+        canvas.width = Math.round(vp.width);
+        canvas.height = Math.round(vp.height);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+        var img = await out.embedJpg(await canvasToJpeg(canvas, level.quality));
+        var p = out.addPage([pt.width, pt.height]);
+        p.drawImage(img, { x: 0, y: 0, width: pt.width, height: pt.height });
+
+        $('fill').style.width = Math.round(i / src.numPages * 100) + '%';
+        page.cleanup();
+      }
+
+      outBytes = await out.save();
+      outName = file.name.replace(/\.pdf$/i, '') + '-compressed.pdf';
+      showResult(file.size, outBytes.length);
+      if (outBytes.length < file.size) { saveFile(); }
+    } catch (err) {
+      showError('Could not compress this file. It may be password-protected or damaged. (' +
+        (err && err.message ? err.message : 'unknown error') + ')');
+    }
+
+    $('progressBox').className = '';
+    $('compressBtn').disabled = false;
+  }
+  $('compressBtn').addEventListener('click', compress);
+
+  function showResult(before, after) {
+    var smaller = after < before;
+    var percent = Math.round((1 - after / before) * 100);
+    $('saved').textContent = smaller ? percent + '% smaller' : 'Already compact';
+    $('sizeBefore').textContent = formatSize(before);
+    $('sizeAfter').textContent = formatSize(after);
+    $('note').textContent = smaller ? '' :
+      'This PDF is already optimised. Try a stronger level or keep the original.';
+    $('downloadBtn').style.display = smaller ? 'block' : 'none';
+    $('result').className = 'card show';
+  }
+
+  async function saveFile() {
+    if (!outBytes) return;
+    try {
+      if (window.claude && claude.use) {
+        var d = await claude.use('downloads');
+        if (d) { await d.save({ filename: outName, data: outBytes }); return; }
+      }
+    } catch (e) {
+      if (e && e.code === 'declined') return;
+    }
+    var blob = new Blob([outBytes], { type: 'application/pdf' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = outName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  $('downloadBtn').addEventListener('click', saveFile);
+})();
+</script>
+</body>
+</html>
